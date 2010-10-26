@@ -74,11 +74,12 @@ module Geokit
     @@request_timeout = nil    
     @@yahoo = 'REPLACE_WITH_YOUR_YAHOO_KEY'
     @@google = 'REPLACE_WITH_YOUR_GOOGLE_KEY'
+    @@get_pos = 'REPLACE_WITH_YOUR_GETPOS_KEY'
     @@geocoder_us = false
     @@geocoder_ca = false
     @@geonames = false
     @@provider_order = [:google,:us]
-    @@ip_provider_order = [:geo_plugin,:ip]
+    @@ip_provider_order = [:geo_plugin,:ip, :get_pos]
     @@logger=Logger.new(STDOUT)
     @@logger.level=Logger::INFO
     @@domain = nil
@@ -552,6 +553,58 @@ module Geokit
       end
     end
 
+    # Provides geocoding based upon an IP address.  The underlying web service is getpos.de
+    class GetPosGeocoder < Geocoder
+      
+      private
+      
+      def self.do_geocode(ip, options = {})
+        return GeoLoc.new unless /^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})?$/.match(ip)
+        response = self.call_geocoder_service("http://services.getpos.de//ip2loc.asmx/IPLocation?AccessId=#{Geokit::Geocoders::get_pos}&IPAddress=#{ip}")
+        return response.is_a?(Net::HTTPSuccess) ? parse_xml(response.body) : GeoLoc.new
+      rescue
+        logger.error "Caught an error during GeoPosGeocoder geocoding call: "+$!
+        return GeoLoc.new
+      end
+      
+      ## Example response
+      #
+      # <getpos>
+      #        <returncode>200</returncode>
+      #        <country>
+      #          <code>DE</code>
+      #          <name>Germany</name>
+      #        </country>
+      #        <region>
+      #          <code>12</code>
+      #          <name>Mecklenburg-Vorpommern</name>
+      #        </region>
+      #        <city>Rostock</city>
+      #        <position>
+      #          <longitude>12,1333</longitude>
+      #          <latitude>54,0833</latitude>
+      #        </position>
+      #      </getpos>
+     
+      def self.parse_xml(xml)
+        xml = REXML::Document.new(xml)
+        str = xml.elements['//string'].text
+        xml = REXML::Document.new(str.gsub("&lt;", "<").gsub("&gt;", ">"))
+        geo = GeoLoc.new
+        geo.provider='get_pos'
+        geo.city = xml.elements['//city'].text.gsub(/^-$/, "")
+        geo.state = xml.elements['//region/name'].text.gsub(/^-$/, "")
+        geo.country_code = xml.elements['//country/code'].text.gsub(/^-$/, "")
+        lat = xml.elements['//position/latitude'].text.gsub(/^-$/, "").gsub(",", ".")
+        geo.lat = lat.to_f if lat =~ /^\d+(\.\d+)?$/
+        lng = xml.elements['//position/longitude'].text.gsub(/^-$/, "").gsub(",", ".")
+        geo.lng = lng.to_f if lng =~ /^\d+(\.\d+)?$/
+        geo.success = !!geo.city && !geo.city.empty?
+        return geo
+      end
+    end
+
+
     # Provides geocoding based upon an IP address.  The underlying web service is a hostip.info
     # which sources their data through a combination of publicly available information as well
     # as community contributions.
@@ -650,18 +703,19 @@ module Geokit
       def self.do_geocode(address, options = {})
         geocode_ip = /^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.match(address)
         provider_order = geocode_ip ? Geokit::Geocoders::ip_provider_order : Geokit::Geocoders::provider_order
-        
+        results = []
         provider_order.each do |provider|
           begin
             klass = Geokit::Geocoders.const_get "#{Geokit::Inflector::camelize(provider.to_s)}Geocoder"
             res = klass.send :geocode, address, options
+            results << res
             return res if res.success?
           rescue
             logger.error("Something has gone very wrong during geocoding, OR you have configured an invalid class name in Geokit::Geocoders::provider_order. Address: #{address}. Provider: #{provider}")
           end
         end
-        # If we get here, we failed completely.
-        GeoLoc.new
+        # If we get here, we failed completely. So we take the best available result or an empty GeoLoc object if none are available.
+        results.sort{|a,b| b.score <=> a.score}.first || GeoLoc.new
       end
       
       # This method will call one or more geocoders in the order specified in the 

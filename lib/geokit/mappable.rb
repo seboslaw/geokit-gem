@@ -430,6 +430,17 @@ module Geokit
     def to_s
       "Provider: #{provider}\nStreet: #{street_address}\nCity: #{city}\nState: #{state}\nZip: #{zip}\nLatitude: #{lat}\nLongitude: #{lng}\nCountry: #{country_code}\nSuccess: #{success}"
     end
+    
+    def score
+      s = 0
+      s += 3 if country_code.present?
+      s += 3 if lat.present?
+      s += 1 if city.present?
+      s += 1 if street_address.present?  
+      s += 1 if zip.present?  
+      s += 1 if state.present? 
+      s     
+    end
   end
   
   # Bounds represents a rectangular bounds, defined by the SW and NE corners
